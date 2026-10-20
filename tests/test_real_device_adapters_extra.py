@@ -344,3 +344,76 @@ def test_registry_exposes_every_real_device_adapter() -> None:
     }
     for service_id in expected:
         assert get_service_adapter(service_id).service_id == service_id
+
+
+# --------------------------------------------------------------------------
+# read-only numeric services (A0VG fridge temperatures)
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "service_id,minimum",
+    [
+        ("refrigeratorTemperatureC", -38),
+        ("freezerTemperatureC", -23),
+        ("vtRoomTemperature", -38),
+    ],
+)
+def test_readonly_number_reports_clamped_degrees(service_id: str, minimum: int) -> None:
+    adapter = get_service_adapter(service_id)
+    hass = _FakeHass({"sensor.fridge": _state("5")})
+    service = ServiceRef(service_id, service_id)
+
+    assert _run(adapter.read_state(hass, service, ("sensor.fridge",))) == {
+        service_id: 5
+    }
+
+    hass = _FakeHass({"sensor.fridge": _state("-100")})
+    assert _run(adapter.read_state(hass, service, ("sensor.fridge",))) == {
+        service_id: minimum
+    }
+
+
+def test_readonly_number_supports_a_scale_factor() -> None:
+    adapter = get_service_adapter("refrigeratorTemperatureC")
+    hass = _FakeHass({"sensor.fridge": _state("5.0")})
+    service = ServiceRef(
+        "refrigeratorTemperatureC",
+        "refrigeratorTemperatureC",
+        (("factor", 10), ("min", -380), ("max", 500)),
+    )
+
+    assert _run(adapter.read_state(hass, service, ("sensor.fridge",))) == {
+        "refrigeratorTemperatureC": 50
+    }
+
+
+def test_readonly_number_never_calls_ha_services() -> None:
+    adapter = get_service_adapter("freezerTemperatureC")
+    hass = _FakeHass({"sensor.fridge": _state("-18")})
+    service = ServiceRef("freezerTemperatureC", "freezerTemperatureC")
+
+    _run(adapter.apply_command(hass, service, ("sensor.fridge",), {"freezerTemperatureC": -18}))
+
+    assert hass.services.calls == []
+
+
+def test_readonly_number_rejects_writable_domains_and_contracts() -> None:
+    adapter = get_service_adapter("vtRoomTemperature")
+    with pytest.raises(ValueError):
+        adapter.validate_entities(("switch.fridge",))
+    with pytest.raises(ValueError):
+        adapter.validate_service(
+            ServiceRef("vtRoomTemperature", "vtRoomTemperature", (("factor", 0),))
+        )
+    with pytest.raises(ValueError):
+        adapter.validate_service(
+            ServiceRef("vtRoomTemperature", "vtRoomTemperature", (("mapping", {}),))
+        )
+
+
+def test_readonly_number_ignores_unavailable_entities() -> None:
+    adapter = get_service_adapter("vtRoomTemperature")
+    hass = _FakeHass({"sensor.fridge": _state("unavailable")})
+    service = ServiceRef("vtRoomTemperature", "vtRoomTemperature")
+
+    assert _run(adapter.read_state(hass, service, ("sensor.fridge",))) == {}

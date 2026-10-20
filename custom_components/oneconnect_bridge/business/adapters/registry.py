@@ -24,6 +24,7 @@ from .gas_sensor import ADAPTER as GAS_SENSOR
 from .hcho import ADAPTER as HCHO
 from .humidity import ADAPTER as HUMIDITY
 from .left_time import register_left_time_adapter
+from .readonly_number import register_readonly_number_adapter
 from .mode import ADAPTER as MODE
 from .motor import ADAPTER as MOTOR
 from .open_level import ADAPTER as OPEN_LEVEL
@@ -31,6 +32,38 @@ from .opener import ADAPTER as OPENER
 from .status import ADAPTER as STATUS
 from .switch import ADAPTER as SWITCH
 from .temperature import ADAPTER as TEMPERATURE
+
+
+# Boolean single-feature services. sid == service type == characteristic name.
+# Default contract source: prodId A0VG (海尔冰箱), Profile
+# https://smarthome-drcn.dbankcdn.com/device/guide/A0VG/A0VG.json
+_BOOLEAN_SERVICE_IDS = (
+    "intelligenceMode",
+    "dailyStatus",
+    "travelMode",
+    "quickFreezingMode",
+    "quickRefrigeratingMode",
+)
+
+# Enum services whose value set differs per product and therefore has no
+# default table. Each projection must supply `contract.mapping`.
+# A2GQ (西门子干衣机) https://smarthome-drcn.dbankcdn.com/device/guide/A2GQ/A2GQ.json
+# A2GT (西门子洗碗机) https://smarthome-drcn.dbankcdn.com/device/guide/A2GT/A2GT.json
+_ENUM_SERVICE_IDS = ("action", "status")
+
+# Read-only numeric measurement services.
+# A0VG (海尔冰箱) https://smarthome-drcn.dbankcdn.com/device/guide/A0VG/A0VG.json
+# Candidate status: contract implemented and unit-tested, end-to-end projection
+# not yet confirmed (cloud ACKs dataSync but does not apply the value).
+_READONLY_NUMBER_SERVICE_IDS = (
+    "refrigeratorTemperatureC",
+    "freezerTemperatureC",
+    "vtRoomTemperature",
+)
+
+# Remaining-time services.
+# A2GQ leftTime.time and A2GT lefttime1.lefttime, both int 0..1440 minutes.
+_LEFT_TIME_SERVICE_IDS = ("leftTime", "lefttime1")
 
 
 def _build_adapters() -> dict[str, ServiceAdapter]:
@@ -67,6 +100,8 @@ def _build_adapters() -> dict[str, ServiceAdapter]:
     adapters["status"] = register_enum_adapter("status", writable=False)
     for _service_id in _LEFT_TIME_SERVICE_IDS:
         adapters[_service_id] = register_left_time_adapter(_service_id)
+    for _service_id in _READONLY_NUMBER_SERVICE_IDS:
+        adapters[_service_id] = register_readonly_number_adapter(_service_id)
     return adapters
 
 

@@ -194,3 +194,46 @@ tests/test_real_device_adapters_extra.py 24
 ─────────────────────────────────────────────
 合计                                     61 passed
 ```
+
+---
+
+# 补充：第三批 —— 只读数值服务（2026-10-20）
+
+## 9. readonly_number（冰箱温度，候选状态）
+
+来源单品 `A0VG`，Profile https://smarthome-drcn.dbankcdn.com/device/guide/A0VG/A0VG.json
+覆盖 sid：`refrigeratorTemperatureC`（-38..50）、`freezerTemperatureC`（-23..50）、
+`vtRoomTemperature`（-38..50），均为 `int` 整度、`method: R`。
+
+离线真实数据验证（HA 传感器）：
+
+- `refrigeratorTemperatureC` state `"3"` → `{"refrigeratorTemperatureC": 3}` ✅
+- `freezerTemperatureC` state `"-18"` → `{"freezerTemperatureC": -18}` ✅
+- 字符串 state 正确解析，超范围被 clamp ✅
+- `apply_command` 不调用任何 HA 服务（只读）✅
+- `factor` / `min` / `max` / `characteristic` contract 变体均已单测 ✅
+
+**⚠️ 候选状态，端到端未确认。**
+
+旧版映射格式下，同样的 `dataSync` 报文（`{"refrigeratorTemperatureC": 3}`）发出后：
+
+- 云端返回 `errcode: 0`（ACK 成功）
+- 但华为智慧生活 App 持续显示 Profile 最小值（-38 / -23 / -38）
+- 通过 huawei_smarthome 的 MQTT `deviceDataChanged` 观察，该子设备**从未**回推属性数据
+- 同一网关下 `switch` / `clothesHanger` 等 RW 特性回推正常
+
+即：**RW 特性的 dataSync 会被云端应用，R 特性不会。** 该适配器的契约实现与单测完备，
+但在云端行为被解释之前，不能标记为已支持。
+
+开发中修复：`factor: 0` 原本静默回退到 1，现改为明确抛 `ValueError`，
+与「受控 contract」原则一致。
+
+## 单元测试（第三批后）
+
+```
+tests/test_service_adapters.py            9
+tests/test_real_device_adapters.py       28
+tests/test_real_device_adapters_extra.py 31
+─────────────────────────────────────────────
+合计                                     68 passed
+```
