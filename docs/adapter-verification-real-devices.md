@@ -315,3 +315,66 @@ tests/test_real_device_adapters_extra.py 39
 ─────────────────────────────────────────────
 合计                                     76 passed
 ```
+
+---
+
+# 补充：第五批 —— 命令链路端到端测试（2026-10-21）
+
+新增 `tests/test_command_roundtrip.py`（31 个用例），覆盖云端命令落到 HA 实体的完整路径，
+即网关收到 `device/v3/dataSync` 风格的 `{sid: {characteristic: value}}` 报文后，
+各适配器应当产生的 HA 服务调用。
+
+## 已验证的命令映射
+
+| sid | payload | HA 调用 |
+| --- | --- | --- |
+| `switch` | `{"on": 1}` (light) | `light.turn_on` |
+| `switch` | `{"on": 0}` (light) | `light.turn_off` |
+| `switch` | `{"on": 1}` (climate) | `climate.turn_on` |
+| `switch1` | `{"on": 1}` (lock) | `lock.unlock` |
+| `switch1` | `{"on": 0}` (lock) | `lock.lock` |
+| `mode` | `{"mode": 2}` | `climate.set_hvac_mode("cool")` |
+| `temperature` | `{"target": 250}` | `climate.set_temperature(25.0)` |
+| `motorization` | `{"operationMode": 1/2/3}` | `cover.open_cover` / `close_cover` / `stop_cover` |
+| `motorization` | `{"targetPercent": 55}` | `cover.set_cover_position(55)` |
+| `clothesHanger` | `{"action": 1}` | `cover.open_cover` |
+| `clothesHanger` | `{"lighting": true}` | `light.turn_on` |
+| `clothesHanger` | `{"disinfect": true}` | `switch.turn_on` |
+| `boolean` | `{"<sid>": true}` | `switch.turn_on` |
+| `action` | `{"action": 0}` + mapping | `switch.turn_on` |
+
+## 只读服务不产生任何 HA 调用
+
+`status`、`leftTime`、`lefttime1`、`refrigeratorTemperatureC`、`freezerTemperatureC`
+在收到云端命令时一律不调用 HA 服务（5 个用例）。
+
+## 畸形报文全部丢弃
+
+空 payload、越界枚举（`{"on": 5}`、`{"mode": 99}`、`{"operationMode": 9}`）、
+类型错误（`{"on": "1"}`、`{"target": "250"}`、`{"mode": "cool"}`）、
+未声明的 mapping 值（`{"action": 7}`）均不触发 HA 调用（8 个用例）。
+
+## 适配器覆盖率
+
+用真实生产 mapping 的 18 种 sid 逐一比对注册表，**全部有适配器**：
+
+```
+switch 84 / switch1 20 / mode 8 / temperature 8 / motorization 4
+brightness 1 / clothesHanger 1 / leftTime 1 / lefttime1 1 / status 1 / action 1
+quickFreezingMode / quickRefrigeratingMode / intelligenceMode / dailyStatus / travelMode 各 1
+refrigeratorTemperatureC / freezerTemperatureC 各 1
+```
+
+绑定的 HA 域也全部在适配器支持范围内：
+`light 73 / climate 32 / switch 23 / cover 10 / sensor 7 / lock 3 / binary_sensor 2 / humidifier 1`。
+
+## 单元测试（第五批后）
+
+```
+tests/test_service_adapters.py            9
+tests/test_real_device_adapters.py       28
+tests/test_real_device_adapters_extra.py 39
+tests/test_command_roundtrip.py          31
+─────────────────────────────────────────────
+合计                                    107 passed
+```
