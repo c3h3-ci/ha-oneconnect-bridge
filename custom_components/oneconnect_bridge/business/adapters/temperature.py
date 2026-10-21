@@ -136,12 +136,27 @@ def _characteristic(service: ServiceRef) -> str:
 
 
 def _as_number(value: object) -> float | None:
+    """Parse a numeric value out of an int, float or Huawei display string.
+
+    Huawei cloud entities are not always bare numbers: the fridge set-point
+    entities read like `+3℃或34℉` / `-5℃（软冷冻）或42℉`, so the first signed
+    integer/decimal in the string is used.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         return float(value)
+    text = str(value).strip()
     try:
-        return float(str(value).strip())
+        return float(text)
+    except (TypeError, ValueError):
+        pass
+    import re
+    match = re.search(r"[+-]?\d+(?:\.\d+)?", text)
+    if match is None:
+        return None
+    try:
+        return float(match.group(0))
     except (TypeError, ValueError):
         return None
 
