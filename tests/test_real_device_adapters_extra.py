@@ -579,3 +579,19 @@ def test_fan_drops_unknown_modes_and_rejects_bad_input() -> None:
         adapter.validate_service(ServiceRef("mode", "fan"))
     with pytest.raises(ValueError):
         adapter.validate_service(ServiceRef("fan", "fan", (("mapping", {}),)))
+
+
+def test_temperature_writes_a_half_degree_set_point() -> None:
+    # 0.5 ℃ air conditioners: the write path must keep the fraction.
+    adapter = get_service_adapter("temperature")
+    hass = _FakeHass({"climate.ac": _state("cool", temperature=26.0)})
+    service = ServiceRef(
+        "temperature", "temperature",
+        ({"characteristic": "targetFloat", "float": True,
+          "min": 16, "max": 35, "step": 0.5, "factor": 1}),
+    )
+
+    _run(adapter.apply_command(hass, service, ("climate.ac",), {"targetFloat": 26.5}))
+
+    assert hass.services.calls[0][:2] == ("climate", "set_temperature")
+    assert hass.services.calls[0][2]["temperature"] == 26.5

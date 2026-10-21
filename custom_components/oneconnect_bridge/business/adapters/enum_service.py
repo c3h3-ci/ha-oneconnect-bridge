@@ -63,6 +63,9 @@ class EnumServiceAdapter:
     def validate_entities(self, entity_ids: tuple[str, ...]) -> None:
         if len(entity_ids) != 1:
             raise ValueError(f"{self.service_id} currently requires exactly one HA entity")
+        domain, separator, _object_id = entity_ids[0].partition(".")
+        if not separator or not domain:
+            raise ValueError(f"{self.service_id} requires one valid HA entity")
 
     # -- conversion ------------------------------------------------------
 
@@ -114,6 +117,15 @@ class EnumServiceAdapter:
             await hass.services.async_call(
                 domain,
                 "turn_on" if target == "on" else "turn_off",
+                {"entity_id": entity_ids[0]},
+                blocking=True,
+            )
+            return
+        if domain == "vacuum":
+            # vacuum.start / pause / return_to_base take no option argument.
+            await hass.services.async_call(
+                domain,
+                target,
                 {"entity_id": entity_ids[0]},
                 blocking=True,
             )

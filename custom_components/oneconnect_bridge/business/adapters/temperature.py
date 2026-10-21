@@ -104,11 +104,26 @@ class TemperatureServiceAdapter:
         target = payload.get(char, payload.get("target"))
         if isinstance(target, bool) or not isinstance(target, (int, float)):
             return
+<<<<<<< HEAD
         _field, target_field, scale = _measurement_contract(service)
         if target_field is None:
             return
         target = _command_number(payload.get(target_field))
         if target is None:
+=======
+        degrees = target / factor
+        if minimum is not None:
+            degrees = max(minimum, degrees)
+        if maximum is not None:
+            degrees = min(maximum, degrees)
+        if step:
+            degrees = round(degrees / step) * step
+        value = _quantize(
+            degrees, None, None, None,
+            preserve_float=bool(service.contract_value("float", False)),
+        )
+        if value is None:
+>>>>>>> c47c6ec (fix: keep the fraction when writing 0.5-degree set-points)
             return
         domain = entity_ids[0].partition(".")[0]
         if domain == "climate":
