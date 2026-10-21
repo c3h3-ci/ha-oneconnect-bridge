@@ -44,7 +44,7 @@ class BooleanServiceAdapter:
             raise ValueError(f"{self.service_id} adapter cannot serve {service.service_id}")
         if not service.service_type:
             raise ValueError(f"{self.service_id} requires a service type")
-        unknown = set(dict(service.contract)) - {"on_value", "off_value", "characteristic"}
+        unknown = set(dict(service.contract)) - {"on_value", "off_value", "characteristic", "on_states", "off_states"}
         if unknown:
             raise ValueError(
                 f"{self.service_id} has unsupported contract keys: "
@@ -56,10 +56,8 @@ class BooleanServiceAdapter:
         if len(entity_ids) != 1:
             raise ValueError(f"{self.service_id} currently requires exactly one HA entity")
         domain, separator, _object_id = entity_ids[0].partition(".")
-        if not separator or domain not in {"switch", "light", "fan", "input_boolean"}:
-            raise ValueError(
-                f"{self.service_id} requires a switch, light, fan or input_boolean entity"
-            )
+        if not separator or not domain:
+            raise ValueError(f"{self.service_id} requires one valid HA entity")
 
     # -- conversion ------------------------------------------------------
 
@@ -69,10 +67,13 @@ class BooleanServiceAdapter:
         self.validate_service(service)
         self.validate_entities(entity_ids)
         state = hass.states.get(entity_ids[0])
-        if state is None or state.state not in {"on", "off"}:
+        if state is None or state.state in {"unknown", "unavailable"}:
             return {}
         on_value, off_value = _values(service)
-        return {_characteristic(service): on_value if state.state == "on" else off_value}
+        truth = _truth(service, state.state)
+        if truth is None:
+            return {}
+        return {_characteristic(service): on_value if truth else off_value}
 
     async def apply_command(
         self,
@@ -95,6 +96,9 @@ class BooleanServiceAdapter:
         else:
             return
         domain, _separator, _object_id = entity_ids[0].partition(".")
+        # Domains without turn_on/turn_off simply have no command path.
+        if domain not in {"switch", "light", "fan", "input_boolean"}:
+            return
         await hass.services.async_call(
             domain,
             "turn_on" if enabled else "turn_off",
@@ -118,6 +122,29 @@ def _values(service: ServiceRef) -> tuple[object, object]:
     if isinstance(off_value, bool) is False and off_value not in (False, 0, "0"):
         off_value = False
     return on_value, off_value
+
+
+def _truth(service: ServiceRef, state: str) -> bool | None:
+    """Interpret an arbitrary HA state as boolean.
+
+    Default understanding is the HA convention (`on`/`off`). `on_states` lets a
+    projection declare the false/true sets for odd domains, for example
+    `{"on_states": ["cleaning"], "off_states": ["docked", "idle"]}`.
+    """
+    text = str(state)
+    custom_on = service.contract_value("on_states")
+    if isinstance(custom_on, (list, tuple)) and custom_on:
+        if text in {str(v) for v in custom_on}:
+            return True
+        custom_off = service.contract_value("off_states")
+        if isinstance(custom_off, (list, tuple)) and custom_off:
+            return False if text in {str(v) for v in custom_off} else None
+        return False
+    if text == "on":
+        return True
+    if text == "off":
+        return False
+    return None
 
 
 def register_boolean_adapter(service_id: str, service_type: str | None = None) -> BooleanServiceAdapter:

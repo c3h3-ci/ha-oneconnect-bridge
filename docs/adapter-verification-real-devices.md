@@ -237,3 +237,81 @@ tests/test_real_device_adapters_extra.py 31
 ─────────────────────────────────────────────
 合计                                     68 passed
 ```
+
+---
+
+# 补充：第四批 —— 多实体服务与域放宽（2026-10-21）
+
+## 10. clothesHanger 支持一服务多实体
+
+新版解析器要求 `product.services` 里 sid 唯一，但允许一个 binding 携带多个实体
+（`entities` 是列表）。据此把 `clothesHanger` 适配器改为按 HA 域分派特性：
+
+| HA 域 | 特性 |
+| --- | --- |
+| `cover` | action（升降） |
+| `light` | lighting（照明） |
+| `switch` / `input_boolean` | disinfect（杀菌） |
+| `sensor` / `number` | status |
+
+这样一个 child 就能同时携带晾衣机的升降、照明、杀菌，不必拆成三个设备。
+`fields` contract 可限定只上报部分特性，`mapping` 可覆盖 action 表。
+
+## 11. switch / switch1 适配器放宽
+
+新架构严格要求 sid 与实体域语义匹配，而生产 mapping 里有几类历史绑定无法通过：
+
+| 旧 sid | 实体域 | 处理 |
+| --- | --- | --- |
+| `switch` | `climate` | 适配器新增 climate 支持：非 `off` 即视为开 |
+| `switch` | `sensor` | 允许绑定，用 `on_states`/`off_states` 声明状态集；无控制路径 |
+| `switch` | `binary_sensor` | 同上 |
+| `switch` | `humidifier` | 同上 |
+| `switch1` | `lock` | 适配器新增 lock 支持：`unlocked`→开，下发 `lock.unlock`/`lock.lock` |
+
+## 12. 真实迁移验证（备用机 192.168.3.76）
+
+从旧 free-form binding 语法迁移 111 个子设备（63 + 23 + 25）：
+
+- 迁移脚本零告警完成
+- 新版 `load_enabled_mapping` 解析三个网关全部通过
+- 重启后无 `Invalid gateway mapping` 错误
+- 三个网关全部在线，子设备注册成功
+- 实测上报：`{'switch': {'on': 1}, 'lefttime1': {'lefttime': 0}}`（全 int）
+- 实测 `ma_tong_dian_yuan`：`{'switch1': {'on': 1}}`
+
+## 13. 迁移过程中定位的问题
+
+**① 西门子集成抖动导致的误判**
+
+备用机上 `homeconnect_ws` 在 `unavailable` 与有效值之间反复翻转：
+
+```
+sensor.siemens_dishwasher_power_state   14418 条历史记录
+sensor.siemens_dishwasher_salt          34893 条历史记录
+对照组 switch.sonoff_10027d10c8_3           1 条
+对照组 sensor.ac8226756bee_refrigeratortemperaturec  11 条
+```
+
+oneconnect 只是忠实跟随上报，不是适配器缺陷。
+
+**② 启动期间未注册 child 每 5 秒重试**
+
+`ha_adapter` 的启动重试对尚未完成注册的 child 返回 `False` 从而 5 秒后重试，
+注册完成后自动停止。属于设计行为。
+
+**③ 两台 HA 共用网关序列号会互相抢占云端**
+
+主用机与备用机跑同一套网关 serial 时，云端只允许一条连接，
+两边会互相踢（表现为网关 connectivity 在两台之间镜像翻转）。
+本次测试期间通过禁用主用机集成、只在备用机运行来解决。
+
+## 单元测试（第四批后）
+
+```
+tests/test_service_adapters.py            9
+tests/test_real_device_adapters.py       28
+tests/test_real_device_adapters_extra.py 39
+─────────────────────────────────────────────
+合计                                     76 passed
+```

@@ -105,12 +105,51 @@ def test_boolean_adapter_supports_a_renamed_characteristic() -> None:
     assert _run(adapter.read_state(hass, service, ("switch.fridge",))) == {"on": True}
 
 
-def test_boolean_adapter_rejects_unsupported_domains_and_contracts() -> None:
+def test_boolean_adapter_accepts_any_domain_but_rejects_bad_contracts() -> None:
     adapter = get_service_adapter("travelMode")
+    # The boolean adapters accept any single valid entity id; a domain without
+    # turn_on/turn_off simply has no command path.
+    adapter.validate_entities(("sensor.temperature",))
+    adapter.validate_entities(("binary_sensor.vacuum",))
+    adapter.validate_entities(("humidifier.dehumidifier",))
     with pytest.raises(ValueError):
-        adapter.validate_entities(("sensor.temperature",))
+        adapter.validate_entities(())
+    with pytest.raises(ValueError):
+        adapter.validate_entities(("switch.a", "switch.b"))
     with pytest.raises(ValueError):
         adapter.validate_service(ServiceRef("travelMode", "travelMode", (("factor", 2),)))
+
+
+def test_boolean_adapter_understands_declared_on_states() -> None:
+    # A binary_sensor that reports `cleaning` while running.
+    adapter = get_service_adapter("dailyStatus")
+    service = ServiceRef(
+        "dailyStatus",
+        "dailyStatus",
+        (("on_states", ["cleaning"]), ("off_states", ["docked", "idle"])),
+    )
+    hass = _FakeHass({"binary_sensor.vacuum": _state("cleaning")})
+    assert _run(adapter.read_state(hass, service, ("binary_sensor.vacuum",))) == {
+        "dailyStatus": True
+    }
+
+    hass = _FakeHass({"binary_sensor.vacuum": _state("docked")})
+    assert _run(adapter.read_state(hass, service, ("binary_sensor.vacuum",))) == {
+        "dailyStatus": False
+    }
+
+    # Undeclared states are dropped rather than guessed.
+    hass = _FakeHass({"binary_sensor.vacuum": _state("exploded")})
+    assert _run(adapter.read_state(hass, service, ("binary_sensor.vacuum",))) == {}
+
+
+def test_boolean_adapter_has_no_command_path_for_read_only_domains() -> None:
+    adapter = get_service_adapter("dailyStatus")
+    hass = _FakeHass({"sensor.dryer": _state("on")})
+    service = ServiceRef("dailyStatus", "dailyStatus")
+
+    _run(adapter.apply_command(hass, service, ("sensor.dryer",), {"dailyStatus": True}))
+    assert hass.services.calls == []
 
 
 def test_boolean_adapter_ignores_unavailable_entities() -> None:
@@ -122,69 +161,96 @@ def test_boolean_adapter_ignores_unavailable_entities() -> None:
 
 
 # --------------------------------------------------------------------------
-# clothesHanger (Hotata airer, 174P)
+# clothesHanger (Hotata airer, 174P) - one binding, several entities
 # --------------------------------------------------------------------------
 
-def test_clothes_hanger_action_maps_raise_lower_pause() -> None:
-    adapter = get_service_adapter("clothesHanger")
-    hass = _FakeHass({"cover.airer": _state("open")})
-    service = ServiceRef("clothesHanger", "clothesHanger", (("field", "action"),))
-
-    assert _run(adapter.read_state(hass, service, ("cover.airer",))) == {"action": 1}
-
-    hass = _FakeHass({"cover.airer": _state("closed")})
-    assert _run(adapter.read_state(hass, service, ("cover.airer",))) == {"action": 0}
-
-    hass = _FakeHass({"cover.airer": _state("open")})
-    for enum_value, expected in ((1, "open_cover"), (0, "close_cover"), (2, "stop_cover")):
-        _run(adapter.apply_command(hass, service, ("cover.airer",), {"action": enum_value}))
-        assert hass.services.calls[-1][1] == expected
-
-
-def test_clothes_hanger_lighting_and_disinfect_fields() -> None:
+def test_clothes_hanger_combines_every_characteristic() -> None:
     adapter = get_service_adapter("clothesHanger")
     hass = _FakeHass(
-        {"light.airer": _state("on"), "switch.airer_disinfect": _state("off")}
+        {
+            "cover.airer": _state("open"),
+            "light.airer_light": _state("on"),
+            "switch.airer_disinfect": _state("off"),
+        }
     )
-    lighting = ServiceRef("clothesHanger", "clothesHanger", (("field", "lighting"),))
-    disinfect = ServiceRef("clothesHanger", "clothesHanger", (("field", "disinfect"),))
+    service = ServiceRef("clothesHanger", "clothesHanger")
 
-    assert _run(adapter.read_state(hass, lighting, ("light.airer",))) == {"lighting": True}
-    assert _run(adapter.read_state(hass, disinfect, ("switch.airer_disinfect",))) == {
-        "disinfect": False
-    }
+    assert _run(
+        adapter.read_state(
+            hass, service, ("cover.airer", "light.airer_light", "switch.airer_disinfect")
+        )
+    ) == {"action": 1, "lighting": True, "disinfect": False}
 
+
+def test_clothes_hanger_applies_commands_per_domain() -> None:
+    adapter = get_service_adapter("clothesHanger")
     hass = _FakeHass(
-        {"light.airer": _state("off"), "switch.airer_disinfect": _state("off")}
+        {
+            "cover.airer": _state("closed"),
+            "light.airer_light": _state("off"),
+            "switch.airer_disinfect": _state("off"),
+        }
     )
-    _run(adapter.apply_command(hass, lighting, ("light.airer",), {"lighting": True}))
-    _run(adapter.apply_command(hass, disinfect, ("switch.airer_disinfect",), {"disinfect": True}))
-    assert [call[:2] for call in hass.services.calls] == [
+    service = ServiceRef("clothesHanger", "clothesHanger")
+    entities = ("cover.airer", "light.airer_light", "switch.airer_disinfect")
+
+    _run(adapter.apply_command(hass, service, entities, {"action": 2}))
+    _run(adapter.apply_command(hass, service, entities, {"lighting": True}))
+    _run(adapter.apply_command(hass, service, entities, {"disinfect": True}))
+
+    assert [c[:2] for c in hass.services.calls] == [
+        ("cover", "stop_cover"),
         ("light", "turn_on"),
         ("switch", "turn_on"),
     ]
 
 
-def test_clothes_hanger_rejects_a_field_entity_mismatch() -> None:
+def test_clothes_hanger_honours_a_fields_contract() -> None:
     adapter = get_service_adapter("clothesHanger")
-    service = ServiceRef("clothesHanger", "clothesHanger", (("field", "action"),))
-    # validate_entities only knows the domain set, so the field/domain pairing is
-    # enforced where the contract is available.
-    adapter.validate_entities(("cover.airer",))
+    hass = _FakeHass(
+        {"cover.airer": _state("open"), "light.airer_light": _state("on")}
+    )
+    service = ServiceRef(
+        "clothesHanger", "clothesHanger", (("fields", ["lighting"]),)
+    )
+
+    # Only the lighting characteristic is reported.
+    assert _run(
+        adapter.read_state(hass, service, ("cover.airer", "light.airer_light"))
+    ) == {"lighting": True}
+
+
+def test_clothes_hanger_supports_an_action_mapping_override() -> None:
+    adapter = get_service_adapter("clothesHanger")
+    hass = _FakeHass({"cover.airer": _state("up")})
+    service = ServiceRef(
+        "clothesHanger", "clothesHanger", (("mapping", {"0": "up", "1": "down"}),)
+    )
+
+    assert _run(adapter.read_state(hass, service, ("cover.airer",))) == {"action": 0}
+
+
+def test_clothes_hanger_reports_status_from_numeric_sensors() -> None:
+    adapter = get_service_adapter("clothesHanger")
+    hass = _FakeHass({"sensor.airer_status": _state("1")})
+    service = ServiceRef("clothesHanger", "clothesHanger")
+
+    assert _run(adapter.read_state(hass, service, ("sensor.airer_status",))) == {
+        "status": 1
+    }
+
+
+def test_clothes_hanger_rejects_unknown_domains_and_contracts() -> None:
+    adapter = get_service_adapter("clothesHanger")
     with pytest.raises(ValueError):
         adapter.validate_entities(("climate.airer",))
-    hass = _FakeHass({"switch.airer": _state("on")})
     with pytest.raises(ValueError):
-        _run(adapter.read_state(hass, service, ("switch.airer",)))
-
-
-def test_clothes_hanger_rejects_unknown_fields_and_contracts() -> None:
-    adapter = get_service_adapter("clothesHanger")
+        adapter.validate_entities(())
     with pytest.raises(ValueError):
         adapter.validate_service(ServiceRef("switch", "clothesHanger"))
     with pytest.raises(ValueError):
         adapter.validate_service(
-            ServiceRef("clothesHanger", "clothesHanger", (("field", "nope"),))
+            ServiceRef("clothesHanger", "clothesHanger", (("fields", ["nope"]),))
         )
     with pytest.raises(ValueError):
         adapter.validate_service(
@@ -417,3 +483,36 @@ def test_readonly_number_ignores_unavailable_entities() -> None:
     service = ServiceRef("vtRoomTemperature", "vtRoomTemperature")
 
     assert _run(adapter.read_state(hass, service, ("sensor.fridge",))) == {}
+
+
+# --------------------------------------------------------------------------
+# switch/switch1 with climate entities (A0E0 air conditioners)
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("service_id", ["switch", "switch1"])
+def test_switch_adapters_cover_climate_power(service_id: str) -> None:
+    adapter = get_service_adapter(service_id)
+    service = ServiceRef("switch", service_id)
+
+    # Any non-off climate state means the unit is running.
+    hass = _FakeHass({"climate.ac": _state("cool")})
+    assert _run(adapter.read_state(hass, service, ("climate.ac",))) == {"on": 1}
+
+    hass = _FakeHass({"climate.ac": _state("off")})
+    assert _run(adapter.read_state(hass, service, ("climate.ac",))) == {"on": 0}
+
+    hass = _FakeHass({"climate.ac": _state("off")})
+    _run(adapter.apply_command(hass, service, ("climate.ac",), {"on": 1}))
+    _run(adapter.apply_command(hass, service, ("climate.ac",), {"on": 0}))
+    assert [c[:2] for c in hass.services.calls] == [
+        ("climate", "turn_on"),
+        ("climate", "turn_off"),
+    ]
+
+
+@pytest.mark.parametrize("service_id", ["switch", "switch1"])
+def test_switch_adapters_validate_climate_entities(service_id: str) -> None:
+    adapter = get_service_adapter(service_id)
+    adapter.validate_entities(("climate.ac",))
+    with pytest.raises(ValueError):
+        adapter.validate_entities(("cover.curtain",))

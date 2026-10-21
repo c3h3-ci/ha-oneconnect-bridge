@@ -1,31 +1,34 @@
 """Huawei `clothesHanger` service adapter for the Hotata airer.
 
-The `clothesHanger` service bundles four usable characteristics plus two
-remaining-time counters. Default contract source: prodId `174P`
-(好太太定制晾衣机), Profile
+The `clothesHanger` service bundles several characteristics. Default contract
+source: prodId `174P` (好太太定制晾衣机), Profile
 https://smarthome-drcn.dbankcdn.com/device/guide/174P/174P.json
 
-| characteristic | type | method | meaning                          |
-| -------------- | ---- | ------ | -------------------------------- |
-| action         | int  | RW     | 0 升 / 1 降 / 2 暂停              |
-| lighting       | bool | RW     | 1 照明开 / 0 照明关               |
-| disinfect      | bool | RW     | 1 杀菌开 / 0 杀菌关               |
-| status         | int  | RW     | 0 其他 / 1 最高 / 2 最低          |
-| lightingTime   | int  | RW     | 30..180 分钟                     |
-| disinfectTime  | int  | R      | 0..30 分钟                       |
+| characteristic   | type | method | meaning                        |
+| ---------------- | ---- | ------ | ------------------------------ |
+| action           | int  | RW     | 0 raise / 1 lower / 2 pause     |
+| lighting         | bool | RW     | 1 lighting on / 0 off          |
+| disinfect        | bool | RW     | 1 disinfect on / 0 off         |
+| status           | int  | RW     | 0 other / 1 highest / 2 lowest |
+| lightingTime     | int  | RW     | 30..180 minutes                |
+| disinfectTime    | int  | R      | 0..30 minutes                  |
 
 The two `*Left` counters are read-only Profile internals and are not mapped.
 
-This adapter binds **one HA entity per service**. The typical projection binds
-three sibling services (a `cover` for `action`, a `light` for `lighting` and a
-`switch` for `disinfect`) by declaring the same `clothesHanger` service three
-times with different `field` contract values.
+A single binding may carry several entities: the adapter dispatches each one to
+the characteristic implied by its Home Assistant domain, so one child can carry
+the airer's lift, light and disinfect switch together.
+
+| HA domain                  | characteristic |
+| -------------------------- | -------------- |
+| `cover`                    | action         |
+| `light`                    | lighting       |
+| `switch` / `input_boolean` | disinfect      |
+| `sensor` / `number`        | status         |
 
 Contract:
-  `field` selects which characteristic this binding drives:
-  `action` (default) / `lighting` / `disinfect` / `status`.
-  `entities` must match the field: `cover` for action, `light` for lighting,
-  `switch`/`input_boolean` for disinfect and status.
+  `fields` optionally narrows which characteristics this child reports.
+  `mapping` overrides the `action` table (`{"3": "open"}` style).
 
 Verified against a real projection (1 Hotata airer registered through
 OneConnect Bridge 0.1.x; lighting and disinfect on/off plus raise/lower/pause
@@ -38,13 +41,18 @@ from ..models import ServiceRef
 
 
 _ACTION_SERVICES = {0: "close_cover", 1: "open_cover", 2: "stop_cover"}
+_ACTION_DEFAULT = {"open": 1, "opening": 1, "closed": 0, "closing": 0}
 _FIELDS = {"action", "lighting", "disinfect", "status"}
-_ALLOWED_DOMAINS = {"cover", "light", "switch", "input_boolean", "sensor"}
-_FIELD_DOMAINS = {
-    "action": {"cover"},
-    "lighting": {"light", "switch", "input_boolean"},
-    "disinfect": {"switch", "input_boolean", "light"},
-    "status": {"sensor", "switch", "input_boolean"},
+
+# HA domain -> characteristic this entity drives.
+_DOMAIN_FIELD = {
+    "cover": "action",
+    "light": "lighting",
+    "switch": "disinfect",
+    "input_boolean": "disinfect",
+    "sensor": "status",
+    "number": "status",
+    "input_number": "status",
 }
 
 
@@ -54,44 +62,45 @@ class ClothesHangerServiceAdapter:
     def validate_service(self, service: ServiceRef) -> None:
         if service.service_type != "clothesHanger":
             raise ValueError("clothesHanger requires st: clothesHanger")
-        unknown = set(dict(service.contract)) - {"field"}
+        unknown = set(dict(service.contract)) - {"fields", "mapping"}
         if unknown:
             raise ValueError(
                 "clothesHanger has unsupported contract keys: "
                 + ", ".join(sorted(unknown))
             )
-        _field(service)
+        if not _fields(service):
+            raise ValueError("clothesHanger contract fields must not be empty")
 
     def validate_entities(self, entity_ids: tuple[str, ...]) -> None:
-        if len(entity_ids) != 1:
-            raise ValueError("clothesHanger currently requires exactly one HA entity")
-        domain, separator, _object_id = entity_ids[0].partition(".")
-        if not separator or domain not in _ALLOWED_DOMAINS:
-            raise ValueError(
-                "clothesHanger requires one of " + ", ".join(sorted(_ALLOWED_DOMAINS))
-            )
+        if not entity_ids:
+            raise ValueError("clothesHanger requires at least one HA entity")
+        for entity_id in entity_ids:
+            domain = entity_id.partition(".")[0]
+            if domain not in _DOMAIN_FIELD:
+                raise ValueError(
+                    f"clothesHanger cannot map domain {domain or '<empty>'}; use "
+                    "cover, light, switch, input_boolean, sensor, number or "
+                    "input_number"
+                )
 
     async def read_state(
         self, hass, service: ServiceRef, entity_ids: tuple[str, ...]
     ) -> dict[str, object]:
         self.validate_service(service)
         self.validate_entities(entity_ids)
-        field = _field(service)
-        _check_domain(entity_ids[0], field)
-        state = hass.states.get(entity_ids[0])
-        if state is None or state.state in {"unknown", "unavailable"}:
-            return {}
-        if field == "action":
-            mapping = {"open": 1, "opening": 1, "closed": 0, "closing": 0}
-            value = mapping.get(state.state)
-            return {"action": value} if value is not None else {}
-        if field == "lighting" or field == "disinfect":
-            return {field: state.state == "on"}
-        # status: report the HA state verbatim when it is numeric, else drop it.
-        try:
-            return {"status": int(state.state)}
-        except (TypeError, ValueError):
-            return {}
+        allowed = _fields(service)
+        result: dict[str, object] = {}
+        for entity_id in entity_ids:
+            field = _DOMAIN_FIELD[entity_id.partition(".")[0]]
+            if field not in allowed:
+                continue
+            state = hass.states.get(entity_id)
+            if state is None or state.state in {"unknown", "unavailable"}:
+                continue
+            value = _read_field(service, field, state)
+            if value is not None:
+                result[field] = value
+        return result
 
     async def apply_command(
         self,
@@ -102,48 +111,78 @@ class ClothesHangerServiceAdapter:
     ) -> None:
         self.validate_service(service)
         self.validate_entities(entity_ids)
-        field = _field(service)
-        domain = entity_ids[0].partition(".")[0]
-        _check_domain(entity_ids[0], field)
-        if field not in payload:
-            return
-        value = payload[field]
-        if field == "action":
-            if isinstance(value, bool) or not isinstance(value, int):
-                return
-            service_name = _ACTION_SERVICES.get(value)
-            if service_name is None:
-                return
+        allowed = _fields(service)
+        for entity_id in entity_ids:
+            field = _DOMAIN_FIELD[entity_id.partition(".")[0]]
+            if field not in allowed or field not in payload:
+                continue
+            value = payload[field]
+            if field == "action":
+                if isinstance(value, bool) or not isinstance(value, int):
+                    continue
+                name = _ACTION_SERVICES.get(value)
+                if name is None:
+                    continue
+                await hass.services.async_call(
+                    "cover", name, {"entity_id": entity_id}, blocking=True
+                )
+                continue
+            if not isinstance(value, bool):
+                continue
+            domain = entity_id.partition(".")[0]
+            if domain not in {"light", "switch", "input_boolean"}:
+                continue
             await hass.services.async_call(
-                "cover", service_name, {"entity_id": entity_ids[0]}, blocking=True
+                domain,
+                "turn_on" if value else "turn_off",
+                {"entity_id": entity_id},
+                blocking=True,
             )
-            return
-        if not isinstance(value, bool):
-            return
-        await hass.services.async_call(
-            domain,
-            "turn_on" if value else "turn_off",
-            {"entity_id": entity_ids[0]},
-            blocking=True,
-        )
 
 
 ADAPTER = ClothesHangerServiceAdapter()
 
 
-def _check_domain(entity_id: str, field: str) -> None:
-    domain = entity_id.partition(".")[0]
-    if domain not in _FIELD_DOMAINS[field]:
+def _fields(service: ServiceRef) -> set[str]:
+    value = service.contract_value("fields")
+    if value is None:
+        return set(_FIELDS)
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError("clothesHanger contract fields must be a non-empty list")
+    cleaned = {str(item) for item in value}
+    unknown = cleaned - _FIELDS
+    if unknown:
         raise ValueError(
-            f"clothesHanger {field} requires one of "
-            + ", ".join(sorted(_FIELD_DOMAINS[field]))
+            "clothesHanger contract fields has unknown entries: "
+            + ", ".join(sorted(unknown))
         )
+    return cleaned
 
 
-def _field(service: ServiceRef) -> str:
-    value = service.contract_value("field", "action")
-    if not isinstance(value, str) or value not in _FIELDS:
-        raise ValueError(
-            f"clothesHanger contract field must be one of {', '.join(sorted(_FIELDS))}"
-        )
-    return value
+def _read_field(service: ServiceRef, field: str, state) -> object | None:
+    text = str(state.state)
+    if field == "action":
+        mapping = dict(_ACTION_DEFAULT)
+        table = service.contract_value("mapping")
+        if isinstance(table, dict):
+            for key, value in table.items():
+                if isinstance(key, str) and isinstance(value, str):
+                    mapping[value] = key
+        raw = mapping.get(text)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+    if field in {"lighting", "disinfect"}:
+        if text == "on":
+            return True
+        if text == "off":
+            return False
+        return None
+    # status: numeric states only.
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
