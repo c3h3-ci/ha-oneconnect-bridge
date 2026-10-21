@@ -401,3 +401,44 @@ def test_mode_ignores_unavailable_entities() -> None:
 def test_registry_exposes_every_new_adapter() -> None:
     for service_id in ("switch1", "mode", "temperature", "motorization"):
         assert get_service_adapter(service_id).service_id == service_id
+
+
+def test_temperature_parses_huawei_display_strings() -> None:
+    # The cloud renders fridge set-points as '+3℃或34℉' style strings rather
+    # than bare numbers; the first signed number is the Celsius value.
+    adapter = get_service_adapter("temperature")
+    service = ServiceRef(
+        "temperature",
+        "refrigerator",
+        (("characteristic", "target"), ("factor", 1), ("min", 1), ("max", 9)),
+    )
+
+    for raw, expected in (
+        ("+3℃或34℉", 3),
+        ("+9℃或40℉", 9),
+        ("-18℃或0℉", 1),   # clamped into the 1..9 contract regardless
+    ):
+        hass = _FakeHass({"sensor.sp": _state(raw)})
+        assert _run(adapter.read_state(hass, service, ("sensor.sp",))) == {
+            "target": expected
+        }
+
+
+def test_temperature_parses_a_negative_freezer_display_string() -> None:
+    adapter = get_service_adapter("temperature")
+    hass = _FakeHass({"sensor.sp": _state("-18℃或0℉")})
+    service = ServiceRef(
+        "temperature",
+        "freezer",
+        (("factor", 1), ("min", -23), ("max", -15)),
+    )
+
+    assert _run(adapter.read_state(hass, service, ("sensor.sp",))) == {"target": -18}
+
+
+def test_temperature_drops_a_string_without_any_number() -> None:
+    adapter = get_service_adapter("temperature")
+    hass = _FakeHass({"sensor.sp": _state("unknown-ish")})
+    service = ServiceRef("temperature", "refrigerator", (("factor", 1),))
+
+    assert _run(adapter.read_state(hass, service, ("sensor.sp",))) == {}

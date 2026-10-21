@@ -468,3 +468,62 @@ tests/test_command_roundtrip.py          31
 ─────────────────────────────────────────────
 合计                                    111 passed
 ```
+
+## 17. 华为云端实体的显示字符串（2026-10-21 补）
+
+`_as_number` 原本只接受 int/float 或纯数字字符串，但华为云端把冰箱设定值渲染成
+带单位的显示字符串：
+
+```
+sensor..._refrigeratortargettemplevel   '+3℃或34℉'
+sensor..._freezertargettemplevel        '-18℃或0℉'
+select..._vtroomtargettemplevel         '-5℃（软冷冻）或42℉'
+```
+
+这些实体的 `attributes` 里还有 `device_class: enum` 与 `options` 列表，但 `state`
+本身是上面那种字符串。结果 `_as_number` 全部返回 `None`，适配器返回空 payload，
+服务被静默地排除在 snapshot 之外 —— 表面现象就是 App 一直显示 Profile 边界值。
+
+修复：`_as_number` 在直接转换失败后，取字符串中第一个带符号的整数/小数。
+上述三个实体分别得到 3、-18、-5。
+
+**端到端复验**（完整重启 HA 后）：
+
+```
+Startup adapter snapshot child=hai_er_bing_xiang state={
+  'quickFreezingMode': {'quickFreezingMode': False},
+  'quickRefrigeratingMode': {'quickRefrigeratingMode': False},
+  'intelligenceMode': {'intelligenceMode': False},
+  'dailyStatus': {'dailyStatus': True},
+  'travelMode': {'travelMode': False},
+  'refrigerator': {'target': 3},
+  'freezer': {'target': -18},
+}
+```
+
+云端实体 `sensor.ac8226756bee_refrigeratortargettemplevel` 读回 `+3℃或34℉`，
+不再是 `-38` 占位值。
+
+## 18. 操作陷阱：reload 不重载适配器代码
+
+调试期间反复踩到的一件事：
+
+- **`reload`（网关重载按钮）只重读 mapping.yaml，不重新导入 Python 模块。**
+- 改了 `business/adapters/*.py` 之后必须**完整重启 Home Assistant**，
+  否则仍是旧的适配器在跑，表现为「新 mapping 似乎没生效」。
+
+这个现象让我一度误判适配器逻辑有问题；实际是旧模块还在内存里。
+排查时可以在适配器里写一行文件输出（例如 `/tmp/xxx.jsonl`）确认代码版本，
+因为 `ha core logs` 只保留最后 100 行、`/api/error_log` 在该版本已移除、
+`system_log` 订阅也拿不到这些模块的日志。
+
+## 单元测试（最终）
+
+```
+tests/test_service_adapters.py            9
+tests/test_real_device_adapters.py       35
+tests/test_real_device_adapters_extra.py 39
+tests/test_command_roundtrip.py          31
+─────────────────────────────────────────────
+合计                                    113 passed
+```
