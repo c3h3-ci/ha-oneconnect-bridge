@@ -68,6 +68,7 @@ _LEFT_TIME_SERVICE_IDS = ("leftTime", "lefttime1")
 
 def _build_adapters() -> dict[str, ServiceAdapter]:
     adapters: dict[str, ServiceAdapter] = {}
+<<<<<<< HEAD
     for adapter in (
         SWITCH,
         BRIGHTNESS,
@@ -89,6 +90,10 @@ def _build_adapters() -> dict[str, ServiceAdapter]:
         ACTION,
         CLOTHES_HANGER,
     ):
+=======
+    for adapter in (SWITCH, SWITCH1, BRIGHTNESS, CCT, COLOUR, MODE, TEMPERATURE,
+                    MOTORIZATION, CLOTHES_HANGER, FAN):
+>>>>>>> cf2e75f (feat: support 0.5-degree air conditioners via the 2FAT protocol profile)
         adapters[adapter.service_id] = adapter
     for _service_id in ("switch1", "switch2", "switch3"):
         adapters[_service_id] = SWITCH

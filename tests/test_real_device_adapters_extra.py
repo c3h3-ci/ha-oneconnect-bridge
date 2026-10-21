@@ -516,3 +516,66 @@ def test_switch_adapters_validate_climate_entities(service_id: str) -> None:
     adapter.validate_entities(("climate.ac",))
     with pytest.raises(ValueError):
         adapter.validate_entities(("cover.curtain",))
+
+
+# --------------------------------------------------------------------------
+# fan (2FAT protocol AC, gear enum)
+# --------------------------------------------------------------------------
+
+def test_fan_maps_the_seven_mitsubishi_modes() -> None:
+    adapter = get_service_adapter("fan")
+    service = ServiceRef("fan", "fan")
+    # The live MIAS entity reports these exact Chinese labels.
+    cases = {
+        "自动": 0, "静音": 9, "超低": 1, "低风": 2, "中风": 3, "高风": 5, "超高": 7,
+    }
+    for label, gear in cases.items():
+        hass = _FakeHass({"climate.ac": _state("cool", fan_mode=label)})
+        assert _run(adapter.read_state(hass, service, ("climate.ac",))) == {
+            "gear": gear
+        }, label
+
+
+def test_fan_maps_english_fan_modes() -> None:
+    adapter = get_service_adapter("fan")
+    service = ServiceRef("fan", "fan")
+    for label, gear in {"auto": 0, "silent": 9, "low": 2, "medium": 3, "high": 5}.items():
+        hass = _FakeHass({"climate.ac": _state("cool", fan_mode=label)})
+        assert _run(adapter.read_state(hass, service, ("climate.ac",))) == {
+            "gear": gear
+        }, label
+
+
+def test_fan_writes_set_fan_mode() -> None:
+    adapter = get_service_adapter("fan")
+    hass = _FakeHass({"climate.ac": _state("cool", fan_mode="自动")})
+    service = ServiceRef("fan", "fan")
+
+    _run(adapter.apply_command(hass, service, ("climate.ac",), {"gear": 3}))
+
+    assert hass.services.calls[0][:2] == ("climate", "set_fan_mode")
+    assert hass.services.calls[0][2]["fan_mode"] == "中风"
+
+
+def test_fan_supports_a_mapping_override_and_fan_entities() -> None:
+    adapter = get_service_adapter("fan")
+    service = ServiceRef("fan", "fan", (("mapping", {"0": "turbo"}),))
+    hass = _FakeHass({"fan.floor": _state("on", fan_mode="turbo")})
+
+    assert _run(adapter.read_state(hass, service, ("fan.floor",))) == {"gear": 0}
+    _run(adapter.apply_command(hass, service, ("fan.floor",), {"gear": 0}))
+    assert hass.services.calls[0][:2] == ("fan", "set_fan_mode")
+
+
+def test_fan_drops_unknown_modes_and_rejects_bad_input() -> None:
+    adapter = get_service_adapter("fan")
+    service = ServiceRef("fan", "fan")
+    hass = _FakeHass({"climate.ac": _state("cool", fan_mode="nonsense")})
+    assert _run(adapter.read_state(hass, service, ("climate.ac",))) == {}
+
+    with pytest.raises(ValueError):
+        adapter.validate_entities(("light.bulb",))
+    with pytest.raises(ValueError):
+        adapter.validate_service(ServiceRef("mode", "fan"))
+    with pytest.raises(ValueError):
+        adapter.validate_service(ServiceRef("fan", "fan", (("mapping", {}),)))

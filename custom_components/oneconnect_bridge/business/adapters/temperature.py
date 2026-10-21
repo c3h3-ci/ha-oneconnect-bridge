@@ -17,7 +17,7 @@ class TemperatureServiceAdapter:
         # Haier four-door fridges carry target+current in a `heat` service.
         if service.service_type not in {"temperature", "heat"}:
             raise ValueError("temperature requires st: temperature or heat")
-        unknown = set(dict(service.contract)) - {"factor", "min", "max", "step", "characteristic"}
+        unknown = set(dict(service.contract)) - {"factor", "min", "max", "step", "characteristic", "float"}
         if unknown:
             raise ValueError(
                 "temperature has unsupported contract keys: "
@@ -57,7 +57,10 @@ class TemperatureServiceAdapter:
                 degrees = min(maximum, degrees)
             if step:
                 degrees = round(degrees / step) * step
-            value = _quantize(degrees * factor, None, None, None)
+            value = _quantize(
+                degrees * factor, None, None, None,
+                preserve_float=bool(service.contract_value("float", False)),
+            )
             return {_characteristic(service): value} if value is not None else {}
         minimum, maximum, step = _limits(service)
         result: dict[str, object] = {}
@@ -76,7 +79,10 @@ class TemperatureServiceAdapter:
                 degrees = min(maximum, degrees)
             if step:
                 degrees = round(degrees / step) * step
-            value = _quantize(degrees * factor, None, None, None)
+            value = _quantize(
+                degrees * factor, None, None, None,
+                preserve_float=bool(service.contract_value("float", False)),
+            )
             if value is not None:
                 # A Profile may name the writable characteristic differently
                 # (for example the A0VG fridge exposes `refrigerator.target`).
@@ -209,15 +215,31 @@ def _number(value: object) -> float | None:
 def _command_number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
+    return float(value)
 
 
-def _wire_number(value: float) -> int | float:
-    return int(value) if value.is_integer() else value
-
+def _quantize(
+    value: float,
+    minimum: float | None,
+    maximum: float | None,
+    step: float | None,
+    *,
+    preserve_float: bool = False,
+) -> int | float | None:
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    if step:
+        value = round(value / step) * step
+    rounded = round(value)
+    if abs(value - rounded) <= 1e-9:
+        return int(rounded)
+    # Profiles that declare `float` characteristics (for example the MC3 AC
+    # protocol product with `targetFloat`) keep the fraction instead of
+    # rejecting the reading.
+    if preserve_float:
+        return round(value, 2)
+    return None
 
 ADAPTER = TemperatureServiceAdapter()
