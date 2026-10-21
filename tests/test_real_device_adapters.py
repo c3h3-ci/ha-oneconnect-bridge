@@ -208,12 +208,54 @@ def test_temperature_clamps_values_outside_the_contract_limits() -> None:
     assert hass.services.calls[0][2]["temperature"] == 30.0
 
 
-def test_temperature_rejects_non_climate_entities() -> None:
+def test_temperature_accepts_set_point_domains() -> None:
     adapter = get_service_adapter("temperature")
+    for entity in ("climate.ac", "sensor.setpoint", "number.setpoint", "input_number.sp"):
+        adapter.validate_entities((entity,))
     with pytest.raises(ValueError):
-        adapter.validate_entities(("sensor.temp",))
+        adapter.validate_entities(("light.bulb",))
     with pytest.raises(ValueError):
         adapter.validate_service(ServiceRef("mode", "temperature"))
+
+
+def test_temperature_supports_a_renamed_characteristic() -> None:
+    # A0VG fridge exposes `refrigerator.target` rather than `temperature.target`.
+    adapter = get_service_adapter("temperature")
+    hass = _FakeHass({"sensor.setpoint": _state("4")})
+    service = ServiceRef(
+        "temperature",
+        "refrigerator",
+        (("characteristic", "target"), ("factor", 1), ("min", 1), ("max", 9)),
+    )
+
+    assert _run(adapter.read_state(hass, service, ("sensor.setpoint",))) == {
+        "target": 4
+    }
+
+
+def test_temperature_reads_a_plain_sensor_without_scaling() -> None:
+    adapter = get_service_adapter("temperature")
+    hass = _FakeHass({"sensor.setpoint": _state("-18")})
+    service = ServiceRef(
+        "temperature",
+        "freezer",
+        (("factor", 1), ("min", -23), ("max", -15)),
+    )
+
+    assert _run(adapter.read_state(hass, service, ("sensor.setpoint",))) == {
+        "target": -18
+    }
+
+
+def test_temperature_writes_a_number_set_point() -> None:
+    adapter = get_service_adapter("temperature")
+    hass = _FakeHass({"number.setpoint": _state("4")})
+    service = ServiceRef("temperature", "refrigerator", (("factor", 1),))
+
+    _run(adapter.apply_command(hass, service, ("number.setpoint",), {"target": 6}))
+
+    assert hass.services.calls[0][:2] == ("number", "set_value")
+    assert hass.services.calls[0][2]["value"] == 6.0
 
 
 # --------------------------------------------------------------------------

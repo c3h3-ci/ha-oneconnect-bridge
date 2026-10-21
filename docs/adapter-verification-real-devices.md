@@ -378,3 +378,93 @@ tests/test_command_roundtrip.py          31
 ─────────────────────────────────────────────
 合计                                    107 passed
 ```
+
+---
+
+# 补充：第六批 —— 温度设定点（2026-10-21）
+
+## 14. 冰箱温度问题的真正根因与解法
+
+**旧做法（错误）**：把 A0VG 冰箱的 `refrigeratorTemperatureC` / `freezerTemperatureC`
+（`method: R`）当作温度服务上报。
+
+**A0VG Profile 的相关特性：**
+
+| sid | characteristic | type | range | method | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| `refrigerator` | `target` | int | 1..9 | **RW** | 冷藏室设定温度 |
+| `freezer` | `target` | int | -23..-15 | **RW** | 冷冻室设定温度 |
+| `vtRoom` | `target` | int | -20..5 | **RW** | 变温室设定温度 |
+| `refrigeratorTemperatureC` | 同名 | int | -38..50 | R | 冷藏室**实测**温度 |
+| `freezerTemperatureC` | 同名 | int | -23..50 | R | 冷冻室**实测**温度 |
+| `vtRoomTemperature` | 同名 | int | -38..50 | R | 变温室**实测**温度 |
+
+**结论**：`method: R` 的特性由设备侧上报，虚拟设备没有真实设备，云端只能显示
+Profile 的边界值（-38 / -23 / -38），这解释了 App 里恒定的占位读数。
+`dataSync` 对这些特性返回 `errcode: 0` 只是 ACK，不代表云端会应用。
+
+**可用的 RW 通道是 `target`（设定温度）。** 投影改成：
+
+```yaml
+services:
+  - st: temperature
+    sid: refrigerator
+    contract: {characteristic: target, factor: 1, min: 1, max: 9}
+  - st: temperature
+    sid: freezer
+    contract: {characteristic: target, factor: 1, min: -23, max: -15}
+bindings:
+  - sid: refrigerator
+    entities: [sensor.ac8226756bee_refrigeratortargettemplevel]
+  - sid: freezer
+    entities: [sensor.ac8226756bee_freezertargettemplevel]
+```
+
+实测上报快照（reload 后）：
+
+```
+Startup adapter snapshot child=hai_er_bing_xiang
+  'refrigerator': {'target': 80}     # 8 ℃ × 10（factor=10 时的输出）
+  'freezer':      {'target': -150}
+```
+
+**注意 `factor`**：A0VG 的 `target` 是整度，必须 `factor: 1`；默认 `factor: 10`
+是给 A0E0 空调（十分之一度）用的。
+
+## 15. temperature 适配器的三项增强
+
+| 增强 | 原因 |
+| --- | --- |
+| 支持 `characteristic` contract | 冰箱的特性名是 `target`，与 `st: temperature` 不同名 |
+| 支持 `sensor` / `number` / `input_number` 域 | 原本只接受 `climate`，无法绑定冰箱的 sensor |
+| 支持 `factor: 1` | 整度 Profile（冰箱）与十分之一度 Profile（空调）共存 |
+
+新增测试覆盖：重命名特性、整度 sensor 读取、`number.set_value` 写入路径，
+以及四个域的接受与非法域拒绝。
+
+## 16. 2026.10 版 HA 的观测限制（实测记录）
+
+排查期间尝试过的日志与属性通道，记录以免重复踩坑：
+
+| 通道 | 结果 |
+| --- | --- |
+| `ha core logs` | 只保留最后 100 行，启动期注册日志会被冲掉 |
+| `docker logs` | SSH addon 保护模式开启时不可用 |
+| `/api/error_log` | 该端点在该版本返回 404，已移除 |
+| WebSocket `system_log/subscribe` | 订阅成功但不推送 oneconnect 的记录 |
+| `huawei_smarthome_plus` | 只有 `list_devices`，无属性查询接口 |
+| `config_entries/reload`（WS） | 返回 `not_found`；`unload`/`load` 返回 `unknown_command` |
+
+可用的替代：把诊断结果写入 `.storage` 下的 JSON 文件（`store.write_json`），
+或在 `hassio/addon_restart` 后立即执行一次性脚本。
+
+## 单元测试（第六批后）
+
+```
+tests/test_service_adapters.py            9
+tests/test_real_device_adapters.py       32
+tests/test_real_device_adapters_extra.py 39
+tests/test_command_roundtrip.py          31
+─────────────────────────────────────────────
+合计                                    111 passed
+```

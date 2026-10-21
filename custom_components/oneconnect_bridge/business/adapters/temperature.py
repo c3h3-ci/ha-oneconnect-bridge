@@ -7,13 +7,16 @@ import math
 from ..models import ServiceRef
 
 
+_DOMAINS = {"climate", "sensor", "number", "input_number"}
+
+
 class TemperatureServiceAdapter:
     service_id = "temperature"
 
     def validate_service(self, service: ServiceRef) -> None:
         if service.service_type != "temperature":
             raise ValueError("temperature requires st: temperature")
-        unknown = set(dict(service.contract)) - {"field", "target_field", "scale"}
+        unknown = set(dict(service.contract)) - {"factor", "min", "max", "step", "characteristic"}
         if unknown:
             raise ValueError(
                 "temperature has unsupported contract keys: "
@@ -23,10 +26,12 @@ class TemperatureServiceAdapter:
 
     def validate_entities(self, entity_ids: tuple[str, ...]) -> None:
         if len(entity_ids) != 1:
-            raise ValueError("temperature requires exactly one sensor or climate entity")
-        domain, separator, object_id = entity_ids[0].partition(".")
-        if not separator or not object_id or domain not in {"sensor", "climate"}:
-            raise ValueError("temperature requires exactly one sensor or climate entity")
+            raise ValueError("temperature currently requires exactly one HA entity")
+        domain, separator, _object_id = entity_ids[0].partition(".")
+        if not separator or domain not in _DOMAINS:
+            raise ValueError(
+                "temperature requires a climate, sensor, number or input_number entity"
+            )
 
     async def read_state(
         self, hass, service: ServiceRef, entity_ids: tuple[str, ...]
@@ -36,24 +41,45 @@ class TemperatureServiceAdapter:
         state = hass.states.get(entity_ids[0])
         if state is None or state.state in {"unknown", "unavailable"}:
             return {}
-        field, target_field, scale = _measurement_contract(service)
         domain = entity_ids[0].partition(".")[0]
-        if domain == "sensor":
-            if field is None:
+        factor = _factor(service)
+        if domain != "climate":
+            # A plain sensor/number carries the set-point in its own state.
+            raw = _as_number(state.attributes.get("value", state.state))
+            if raw is None:
                 return {}
-            value = _number(state.state)
-            return {field: _wire_number(value * scale)} if value is not None else {}
-
-        attributes = state.attributes
+            minimum, maximum, step = _limits(service)
+            degrees = raw
+            if minimum is not None:
+                degrees = max(minimum, degrees)
+            if maximum is not None:
+                degrees = min(maximum, degrees)
+            if step:
+                degrees = round(degrees / step) * step
+            value = _quantize(degrees * factor, None, None, None)
+            return {_characteristic(service): value} if value is not None else {}
+        minimum, maximum, step = _limits(service)
         result: dict[str, object] = {}
-        current = _number(attributes.get("current_temperature"))
-        if field is not None and current is not None:
-            result[field] = _wire_number(current * scale)
-        target = _number(attributes.get("temperature"))
-        if target is None:
-            target = _number(attributes.get("target_temperature"))
-        if target_field is not None and target is not None:
-            result[target_field] = _wire_number(target * scale)
+        char = _characteristic(service)
+        pairs = (("target", "temperature"), ("current", "current_temperature"))
+        for field, attribute in pairs:
+            raw = state.attributes.get(attribute)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                continue
+            # min/max/step are Profile ranges in whole degrees: quantize in the
+            # degree domain first, then scale onto the wire.
+            degrees = raw
+            if minimum is not None:
+                degrees = max(minimum, degrees)
+            if maximum is not None:
+                degrees = min(maximum, degrees)
+            if step:
+                degrees = round(degrees / step) * step
+            value = _quantize(degrees * factor, None, None, None)
+            if value is not None:
+                # A Profile may name the writable characteristic differently
+                # (for example the A0VG fridge exposes `refrigerator.target`).
+                result[char if field == "target" else field] = value
         return result
 
     async def apply_command(
@@ -65,7 +91,11 @@ class TemperatureServiceAdapter:
     ) -> None:
         self.validate_service(service)
         self.validate_entities(entity_ids)
-        if entity_ids[0].partition(".")[0] != "climate":
+        factor = _factor(service)
+        minimum, maximum, step = _limits(service)
+        char = _characteristic(service)
+        target = payload.get(char, payload.get("target"))
+        if isinstance(target, bool) or not isinstance(target, (int, float)):
             return
         _field, target_field, scale = _measurement_contract(service)
         if target_field is None:
@@ -73,12 +103,22 @@ class TemperatureServiceAdapter:
         target = _command_number(payload.get(target_field))
         if target is None:
             return
-        await hass.services.async_call(
-            "climate",
-            "set_temperature",
-            {"entity_id": entity_ids[0], "temperature": target / scale},
-            blocking=True,
-        )
+        domain = entity_ids[0].partition(".")[0]
+        if domain == "climate":
+            await hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {"entity_id": entity_ids[0], "temperature": value},
+                blocking=True,
+            )
+            return
+        if domain in {"number", "input_number"}:
+            await hass.services.async_call(
+                domain,
+                "set_value",
+                {"entity_id": entity_ids[0], "value": value},
+                blocking=True,
+            )
 
 
 def _measurement_contract(
@@ -86,28 +126,38 @@ def _measurement_contract(
 ) -> tuple[str | None, str | None, float]:
     """Map HA Celsius to the Huawei field using ``scale`` in both directions."""
 
-    field = service.contract_value("field", "current")
-    target_field = service.contract_value("target_field", "target")
-    scale = service.contract_value("scale", 1)
-    if field == "":
-        field = None
-    elif not isinstance(field, str):
-        raise ValueError("temperature contract field must be text")
-    if target_field == "":
-        target_field = None
-    elif not isinstance(target_field, str):
-        raise ValueError("temperature contract target_field must be text")
-    if field is None and target_field is None:
-        raise ValueError("temperature contract must enable a current or target field")
-    if isinstance(scale, bool) or not isinstance(scale, (int, float)):
-        raise ValueError("temperature contract scale must be numeric")
+
+def _characteristic(service: ServiceRef) -> str:
+    """Profile characteristic name carrying the set-point (default `target`)."""
+    value = service.contract_value("characteristic", "target")
+    if isinstance(value, str) and value:
+        return value
+    return "target"
+
+
+def _as_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
     try:
-        scale = float(scale)
-    except (OverflowError, ValueError) as error:
-        raise ValueError("temperature contract scale must be finite") from error
-    if not math.isfinite(scale) or scale <= 0:
-        raise ValueError("temperature contract scale must be positive and finite")
-    return field, target_field, scale
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _factor(service: ServiceRef) -> float:
+    value = service.contract_value("factor", 10)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value == 0:
+        return 10.0
+    return float(value)
+
+
+def _limits(service: ServiceRef) -> tuple[float | None, float | None, float]:
+    minimum = _number(service.contract_value("min"))
+    maximum = _number(service.contract_value("max"))
+    step = _number(service.contract_value("step")) or 1.0
+    return minimum, maximum, float(step)
 
 
 def _number(value: object) -> float | None:

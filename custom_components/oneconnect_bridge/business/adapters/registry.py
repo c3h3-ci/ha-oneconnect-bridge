@@ -98,10 +98,13 @@ def _build_adapters() -> dict[str, ServiceAdapter]:
     # `status` is method R on the real Profiles; `action` is method RW.
     adapters["action"] = register_enum_adapter("action", writable=True)
     adapters["status"] = register_enum_adapter("status", writable=False)
-    for _service_id in _LEFT_TIME_SERVICE_IDS:
-        adapters[_service_id] = register_left_time_adapter(_service_id)
-    for _service_id in _READONLY_NUMBER_SERVICE_IDS:
-        adapters[_service_id] = register_readonly_number_adapter(_service_id)
+    for service_id in _LEFT_TIME_SERVICE_IDS:
+        adapters[service_id] = register_left_time_adapter(service_id)
+    # A0VG fridge set-point services reuse the temperature adapter.
+    for service_id in ("refrigerator", "freezer", "vtRoom"):
+        adapters[service_id] = TEMPERATURE
+    for service_id in _READONLY_NUMBER_SERVICE_IDS:
+        adapters[service_id] = register_readonly_number_adapter(service_id)
     return adapters
 
 
