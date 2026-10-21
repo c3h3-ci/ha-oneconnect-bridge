@@ -7,15 +7,16 @@ import math
 from ..models import ServiceRef
 
 
-_DOMAINS = {"climate", "sensor", "number", "input_number"}
+_DOMAINS = {"climate", "sensor", "number", "input_number", "select"}
 
 
 class TemperatureServiceAdapter:
     service_id = "temperature"
 
     def validate_service(self, service: ServiceRef) -> None:
-        if service.service_type != "temperature":
-            raise ValueError("temperature requires st: temperature")
+        # Haier four-door fridges carry target+current in a `heat` service.
+        if service.service_type not in {"temperature", "heat"}:
+            raise ValueError("temperature requires st: temperature or heat")
         unknown = set(dict(service.contract)) - {"factor", "min", "max", "step", "characteristic"}
         if unknown:
             raise ValueError(
@@ -30,7 +31,7 @@ class TemperatureServiceAdapter:
         domain, separator, _object_id = entity_ids[0].partition(".")
         if not separator or domain not in _DOMAINS:
             raise ValueError(
-                "temperature requires a climate, sensor, number or input_number entity"
+                "temperature requires a climate, sensor, number, input_number or select entity"
             )
 
     async def read_state(
@@ -119,6 +120,21 @@ class TemperatureServiceAdapter:
                 {"entity_id": entity_ids[0], "value": value},
                 blocking=True,
             )
+            return
+        if domain == "select":
+            # Huawei render enum options like '-5℃（软冷冻）或42℉'; match the
+            # option whose parsed number equals the requested degrees.
+            state = hass.states.get(entity_ids[0])
+            options = (state.attributes.get("options") if state else None) or []
+            for option in options:
+                if _as_number(option) == float(value):
+                    await hass.services.async_call(
+                        "select",
+                        "select_option",
+                        {"entity_id": entity_ids[0], "option": option},
+                        blocking=True,
+                    )
+                    return
 
 
 def _measurement_contract(

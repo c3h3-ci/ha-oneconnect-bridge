@@ -101,7 +101,10 @@ def _build_adapters() -> dict[str, ServiceAdapter]:
     for service_id in _LEFT_TIME_SERVICE_IDS:
         adapters[service_id] = register_left_time_adapter(service_id)
     # A0VG fridge set-point services reuse the temperature adapter.
-    for service_id in ("refrigerator", "freezer", "vtRoom"):
+    for service_id in ("refrigerator", "freezer", "vtRoom", "flexzone"):
+        adapters[service_id] = TEMPERATURE
+    # Haier A401 four-door fridges carry target+current in a `heat` service.
+    for service_id in ("refrigeratorFloat", "freezerFloat"):
         adapters[service_id] = TEMPERATURE
     for service_id in _READONLY_NUMBER_SERVICE_IDS:
         adapters[service_id] = register_readonly_number_adapter(service_id)

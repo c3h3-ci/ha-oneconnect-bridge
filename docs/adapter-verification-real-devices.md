@@ -527,3 +527,98 @@ tests/test_command_roundtrip.py          31
 ─────────────────────────────────────────────
 合计                                    113 passed
 ```
+
+---
+
+# 补充：冰箱投影的厂商白名单与四门 Profile（2026-10-21 ~ 22:05）
+
+## 19. `devInfoSync` errcode 18002：厂商白名单
+
+排查海尔冰箱（prodId `A0VG`，manufacturerId `371`）时，`batchBind` 成功、
+`devInfoSync` 一律返回 `errcode 18002`，无论：
+
+- 服务数量改成 1 个
+- sid 与 st 改成同名
+- 删除本地 identity 与 material 后重新绑定
+
+同一网关下 7 个其他子设备全部 `devInfoSync=0, statusSync=0`，只有这台失败。
+
+**根因是厂商**：`manufacturerId=371`（海尔）不能在网关上做虚拟子设备注册，
+海尔自家 `A401`（十字门冰箱，manu 同为 371）同样返回 18002。
+
+改用美的系 `manufacturerId=147` 的 Profile 后立刻成功：
+
+| Profile | prodId | manu | 门型 | devInfoSync |
+| --- | --- | --- | --- | --- |
+| 海尔冰箱 | `A0VG` | `371` | 对开 | ❌ 18002 |
+| 海尔十字门 | `A401` | `371` | 四门 | ❌ 18002 |
+| 美的冰箱 | `A1KE` | `147` | 对开 | ✅ 0 |
+| **COLMO 四门** | **`A1H3`** | **`147`** | **四门** | **✅ 0** |
+
+**结论：华为云端对部分厂商不开放网关虚拟注册；必要时借用同品类、
+同门型、且在白名单内的厂商 Profile。**
+
+## 20. 最终冰箱投影（COLMO A1H3，三温区）
+
+```yaml
+product:
+  prod_id: A1H3
+  sub_prod_id: "00"
+  device_type: "08A"
+  manufacturer: "147"
+  model: CRBS613AC-A8
+  device_name: 冰箱
+  protocol_type: 1
+  setup_type: 0
+  services:
+    - {st: temperature, sid: refrigerator, contract: {factor: 1, min: 2, max: 8}}
+    - {st: temperature, sid: freezer,      contract: {factor: 1, min: -24, max: 0}}
+    - {st: temperature, sid: flexzone,     contract: {factor: 1, min: -24, max: 10}}
+bindings:
+  - {sid: refrigerator, entities: [sensor...refrigeratortargettemplevel]}
+  - {sid: freezer,      entities: [sensor...freezertargettemplevel]}
+  - {sid: flexzone,     entities: [select...vtroomtargettemplevel]}
+```
+
+**云端复验**（`GET /smart-life/v2/devices/{devId}`，即智慧生活 App 自己用的接口）：
+
+```json
+{
+  "devName": "海尔冰箱",
+  "devInfo": {"model": "CRBS613AC-A8"},
+  "status": "online",
+  "services": [
+    {"sid": "refrigerator", "st": "temperature", "data": {"target": 3}},
+    {"sid": "freezer",      "st": "temperature", "data": {"target": -18}},
+    {"sid": "flexzone",     "st": "temperature", "data": {"target": -5}}
+  ]
+}
+```
+
+三个温区都有真实数据，设备为 online。这是本项目首次让云端 `services`
+非空——在此之前该字段恒为 `[]`，App 因此只能显示 Profile 边界值。
+
+## 21. 为什么必须走 App 自己的接口复核
+
+`huawei_smarthome_plus.list_devices` 只返回设备清单（`online`、型号等），
+不含特性值，无法判断上报是否落地。真正能回答「云端存了什么」的接口是
+智慧生活 App 自己用的：
+
+```
+POST /smart-life/v5/devices/dynamic/data      # 批量实时值，body 为 devId 数组
+GET  /smart-life/v2/devices/{dev_id}          # 单设备详情，含 services[].data
+```
+
+凭据取自 `.storage/huawei_smarthome/accounts/<账号>.json` 的
+`hms_access_token` / `user_id` / `base_url`，请求头需带
+`X-AppId: com.huawei.smarthome-ios`、`X-Huid`、`X-HomeId` 等。
+**这是判断「App 显示是否正确」的唯一可靠依据。**
+
+## 22. 本轮同时修复的适配器问题
+
+| 问题 | 修法 |
+| --- | --- |
+| `temperature` 只接受 `st: temperature` | 同时接受 `heat`（`A401` 的温区服务用 st=heat） |
+| `temperature` 只接受 `climate` 域 | 增加 `sensor` / `number` / `input_number` / `select` |
+| `refrigerator`/`freezer`/`flexzone` 未注册 | 全部映射到 `temperature` 适配器 |
+| `select` 域无法写入 | 按解析出的度数匹配 `options` 项后 `select_option` |
