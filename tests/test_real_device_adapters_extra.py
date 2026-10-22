@@ -165,6 +165,7 @@ def test_boolean_adapter_ignores_unavailable_entities() -> None:
 # --------------------------------------------------------------------------
 
 def test_clothes_hanger_combines_every_characteristic() -> None:
+    # cover open means the airer is raised, which is action 0 in Profile 174P.
     adapter = get_service_adapter("clothesHanger")
     hass = _FakeHass(
         {
@@ -179,7 +180,7 @@ def test_clothes_hanger_combines_every_characteristic() -> None:
         adapter.read_state(
             hass, service, ("cover.airer", "light.airer_light", "switch.airer_disinfect")
         )
-    ) == {"action": 1, "lighting": True, "disinfect": False}
+    ) == {"action": 0, "lighting": True, "disinfect": False}
 
 
 def test_clothes_hanger_applies_commands_per_domain() -> None:
@@ -611,3 +612,33 @@ def test_fan_numeric_speed_reads_and_writes_percentages() -> None:
     # A value near the midpoint snaps to the closest label.
     _run(adapter.apply_command(hass, service, ("climate.ac",), {"gear": 56}))
     assert hass.services.calls[1][2]["fan_mode"] == "中风"
+
+
+def test_clothes_hanger_raise_and_lower_directions() -> None:
+    # Profile 174P: 0 = 升 (raise -> open_cover), 1 = 降 (lower -> close_cover).
+    adapter = get_service_adapter("clothesHanger")
+    service = ServiceRef("clothesHanger", "clothesHanger")
+    hass = _FakeHass({"cover.airer": _state("closed")})
+
+    # App presses 升 (raise) -> the cover must open, not close.
+    _run(adapter.apply_command(hass, service, ("cover.airer",), {"action": 0}))
+    assert hass.services.calls[0][:2] == ("cover", "open_cover")
+
+    # App presses 降 (lower) -> the cover must close.
+    _run(adapter.apply_command(hass, service, ("cover.airer",), {"action": 1}))
+    assert hass.services.calls[1][:2] == ("cover", "close_cover")
+
+    # App presses 暂停 (pause) -> stop.
+    _run(adapter.apply_command(hass, service, ("cover.airer",), {"action": 2}))
+    assert hass.services.calls[2][:2] == ("cover", "stop_cover")
+
+
+def test_clothes_hanger_reports_the_airer_direction() -> None:
+    adapter = get_service_adapter("clothesHanger")
+    service = ServiceRef("clothesHanger", "clothesHanger")
+
+    for ha_state, expected in (("open", 0), ("closed", 1)):
+        hass = _FakeHass({"cover.airer": _state(ha_state)})
+        assert _run(adapter.read_state(hass, service, ("cover.airer",))) == {
+            "action": expected
+        }, ha_state

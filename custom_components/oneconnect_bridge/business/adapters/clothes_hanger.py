@@ -40,8 +40,10 @@ from __future__ import annotations
 from ..models import ServiceRef
 
 
-_ACTION_SERVICES = {0: "close_cover", 1: "open_cover", 2: "stop_cover"}
-_ACTION_DEFAULT = {"open": 1, "opening": 1, "closed": 0, "closing": 0}
+# Profile 174P: 0 = 升 (raise), 1 = 降 (lower), 2 = 暂停 (pause).
+# `open_cover` raises the airer, so 0 must map to open, not close.
+_ACTION_SERVICES = {0: "open_cover", 1: "close_cover", 2: "stop_cover"}
+_ACTION_DEFAULT = {"open": 0, "opening": 0, "closed": 1, "closing": 1}
 _FIELDS = {"action", "lighting", "disinfect", "status"}
 
 # HA domain -> characteristic this entity drives.

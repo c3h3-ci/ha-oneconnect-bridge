@@ -130,6 +130,15 @@ _COMMAND_CASES = [
         "cover.airer",
         "closed",
         {"action": 1},
+        ("cover", "close_cover"),
+    ),
+    (
+        "clothesHanger",
+        "clothesHanger",
+        (),
+        "cover.airer",
+        "open",
+        {"action": 0},
         ("cover", "open_cover"),
     ),
     (
