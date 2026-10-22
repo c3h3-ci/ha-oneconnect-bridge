@@ -595,3 +595,19 @@ def test_temperature_writes_a_half_degree_set_point() -> None:
 
     assert hass.services.calls[0][:2] == ("climate", "set_temperature")
     assert hass.services.calls[0][2]["temperature"] == 26.5
+
+
+def test_fan_numeric_speed_reads_and_writes_percentages() -> None:
+    # Midea Profiles expose fan.speed as an int 1..100 instead of an enum.
+    adapter = get_service_adapter("fan")
+    service = ServiceRef("fan", "fan", (("numeric", True),))
+
+    hass = _FakeHass({"climate.ac": _state("cool", fan_mode="中风")})
+    assert _run(adapter.read_state(hass, service, ("climate.ac",))) == {"gear": 55}
+
+    _run(adapter.apply_command(hass, service, ("climate.ac",), {"gear": 80}))
+    assert hass.services.calls[0][2]["fan_mode"] == "高风"
+
+    # A value near the midpoint snaps to the closest label.
+    _run(adapter.apply_command(hass, service, ("climate.ac",), {"gear": 56}))
+    assert hass.services.calls[1][2]["fan_mode"] == "中风"

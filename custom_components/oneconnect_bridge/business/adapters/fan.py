@@ -69,7 +69,7 @@ class FanServiceAdapter:
     def validate_service(self, service: ServiceRef) -> None:
         if service.service_type != "fan":
             raise ValueError("fan requires st: fan")
-        unknown = set(dict(service.contract)) - {"mapping", "characteristic"}
+        unknown = set(dict(service.contract)) - {"mapping", "characteristic", "numeric"}
         if unknown:
             raise ValueError(
                 "fan has unsupported contract keys: " + ", ".join(sorted(unknown))
@@ -80,6 +80,18 @@ class FanServiceAdapter:
                 raise ValueError("fan contract mapping must be a non-empty mapping")
             if not _mapping(service):
                 raise ValueError("fan contract mapping must not be empty")
+        if _numeric(service):
+            # numeric speed Profiles carry an int 1..100 instead of an enum.
+            mapping = _mapping(service)
+            for key, value in mapping.items():
+                if not key.isdigit():
+                    raise ValueError(
+                        "fan numeric mapping keys must be integers, got " + key
+                    )
+                if isinstance(value, str) and value.isdigit():
+                    raise ValueError(
+                        "fan numeric mapping values must be fan_mode labels"
+                    )
 
     def validate_entities(self, entity_ids: tuple[str, ...]) -> None:
         if len(entity_ids) != 1:
@@ -102,6 +114,12 @@ class FanServiceAdapter:
         gear = _lookup(service, fan_mode)
         if gear is None:
             return {}
+        numeric = _numeric(service)
+        if numeric:
+            speed = _NUMERIC_SPEED.get(str(gear))
+            if speed is None:
+                return {}
+            return {_characteristic(service): speed}
         return {_characteristic(service): int(gear)}
 
     async def apply_command(
@@ -114,11 +132,22 @@ class FanServiceAdapter:
         self.validate_service(service)
         self.validate_entities(entity_ids)
         value = payload.get(_characteristic(service))
-        if isinstance(value, bool) or not isinstance(value, int):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return
-        target = _mapping(service).get(str(value))
-        if target is None:
-            return
+        if _numeric(service):
+            target = None
+            best = None
+            for key, speed in _NUMERIC_SPEED.items():
+                distance = abs(float(speed) - float(value))
+                if best is None or distance < best:
+                    best = distance
+                    target = _mapping(service).get(key)
+            if target is None:
+                return
+        else:
+            target = _mapping(service).get(str(int(value)))
+            if target is None:
+                return
         domain = entity_ids[0].partition(".")[0]
         await hass.services.async_call(
             domain,
@@ -129,6 +158,27 @@ class FanServiceAdapter:
 
 
 ADAPTER = FanServiceAdapter()
+
+
+# fan_mode label -> percentage used by `fan.speed` Profiles (int 1..100).
+_NUMERIC_SPEED = {
+    "0": 60,   # 自动
+    "1": 25,   # 超低
+    "2": 40,   # 低风
+    "3": 55,   # 中风
+    "4": 68,   # 中高
+    "5": 80,   # 高风
+    "6": 88,   # 强风
+    "7": 95,   # 超高
+    "8": 1,    # 停止
+    "9": 15,   # 静音
+    "10": 32,  # 中低风
+    "11": 100, # 超高风
+}
+
+
+def _numeric(service: ServiceRef) -> bool:
+    return bool(service.contract_value("numeric", False))
 
 
 def _characteristic(service: ServiceRef) -> str:
