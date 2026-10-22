@@ -93,7 +93,8 @@ class ClothesHangerServiceAdapter:
         allowed = _fields(service)
         result: dict[str, object] = {}
         for entity_id in entity_ids:
-            field = _DOMAIN_FIELD[entity_id.partition(".")[0]]
+            domain = entity_id.partition(".")[0]
+            field = _DOMAIN_FIELD[domain]
             if field not in allowed:
                 continue
             state = hass.states.get(entity_id)
@@ -102,6 +103,13 @@ class ClothesHangerServiceAdapter:
             value = _read_field(service, field, state)
             if value is not None:
                 result[field] = value
+            # A cover also carries the airer's position: `status` is the
+            # Profile's raise/lower state (1 highest, 2 lowest, 0 in between),
+            # while `action` only describes the last movement.
+            if domain == "cover" and "status" in allowed:
+                position = _cover_status(service, state)
+                if position is not None:
+                    result["status"] = position
         return result
 
     async def apply_command(
@@ -159,6 +167,32 @@ def _fields(service: ServiceRef) -> set[str]:
             + ", ".join(sorted(unknown))
         )
     return cleaned
+
+
+def _cover_status(service: ServiceRef, state) -> int | None:
+    """Map a cover entity's position onto Profile `status`.
+
+    Profile 174P declares `status` as 0 other / 1 highest / 2 lowest, so the
+    cover's `current_position` decides it: 100 means fully raised, 0 means fully
+    lowered. Contracts may override the two endpoints through `mapping`.
+    """
+    if str(state.state) in {"unknown", "unavailable"}:
+        return None
+    position = (state.attributes or {}).get("current_position")
+    if isinstance(position, bool) or not isinstance(position, (int, float)):
+        return None
+    high, low = 1, 2
+    table = service.contract_value("mapping")
+    if isinstance(table, dict):
+        if isinstance(table.get("highest"), int):
+            high = table["highest"]
+        if isinstance(table.get("lowest"), int):
+            low = table["lowest"]
+    if position >= 100:
+        return high
+    if position <= 0:
+        return low
+    return 0
 
 
 def _read_field(service: ServiceRef, field: str, state) -> object | None:

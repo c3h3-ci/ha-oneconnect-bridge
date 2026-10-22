@@ -642,3 +642,15 @@ def test_clothes_hanger_reports_the_airer_direction() -> None:
         assert _run(adapter.read_state(hass, service, ("cover.airer",))) == {
             "action": expected
         }, ha_state
+
+
+def test_clothes_hanger_reports_the_airer_position_as_status() -> None:
+    adapter = get_service_adapter("clothesHanger")
+    service = ServiceRef("clothesHanger", "clothesHanger")
+
+    # Fully raised -> status 1 (highest); fully lowered -> 2 (lowest).
+    for position, expected in ((100, 1), (0, 2), (50, 0)):
+        hass = _FakeHass({"cover.airer": _state("open", current_position=position)})
+        data = _run(adapter.read_state(hass, service, ("cover.airer",)))
+        assert data.get("status") == expected, position
+        assert "action" in data
