@@ -1,9 +1,10 @@
 """Explicit registry of trusted Huawei service adapters.
 
-Combines the upstream adapter set (switch, brightness, cct, colour, mode,
-temperature, motorization, opener, status, action, ...) with the real-device
-adapters added on the bench: clothesHanger, enum-backed action/status and
-leftTime countdowns.
+Upstream adapter set (switch, brightness, cct, colour, mode, temperature,
+motor, open_level, opener, status, action, ...) combined with the real-device
+adapters added on the bench: motorization, clothesHanger, enum-backed
+action/status, leftTime countdowns, boolean single-feature services and
+read-only numeric measurements.
 """
 
 from __future__ import annotations
@@ -24,13 +25,15 @@ from .gas_sensor import ADAPTER as GAS_SENSOR
 from .hcho import ADAPTER as HCHO
 from .humidity import ADAPTER as HUMIDITY
 from .left_time import register_left_time_adapter
-from .readonly_number import register_readonly_number_adapter
 from .mode import ADAPTER as MODE
 from .motor import ADAPTER as MOTOR
+from .motorization import ADAPTER as MOTORIZATION
 from .open_level import ADAPTER as OPEN_LEVEL
 from .opener import ADAPTER as OPENER
+from .readonly_number import register_readonly_number_adapter
 from .status import ADAPTER as STATUS
 from .switch import ADAPTER as SWITCH
+from .switch1 import ADAPTER as SWITCH1
 from .temperature import ADAPTER as TEMPERATURE
 
 
@@ -65,30 +68,48 @@ _READONLY_NUMBER_SERVICE_IDS = (
 # A2GQ leftTime.time and A2GT lefttime1.lefttime, both int 0..1440 minutes.
 _LEFT_TIME_SERVICE_IDS = ("leftTime", "lefttime1")
 
-
 def _build_adapters() -> dict[str, ServiceAdapter]:
     adapters: dict[str, ServiceAdapter] = {}
-    for adapter in (SWITCH, SWITCH1, BRIGHTNESS, CCT, COLOUR, MODE, TEMPERATURE,
-                    MOTORIZATION, CLOTHES_HANGER, FAN):
+    for adapter in (
+        SWITCH,
+        BRIGHTNESS,
+        CCT,
+        COLOUR,
+        TEMPERATURE,
+        HUMIDITY,
+        AIR_DETECTOR,
+        MOTOR,
+        OPEN_LEVEL,
+        OPENER,
+        HCHO,
+        ALARM,
+        GAS_SENSOR,
+        MODE,
+        FAN,
+        CLEANER_ROBOT,
+        STATUS,
+        ACTION,
+        MOTORIZATION,
+        CLOTHES_HANGER,
+    ):
         adapters[adapter.service_id] = adapter
-    for _service_id in ("switch1", "switch2", "switch3"):
-        adapters[_service_id] = SWITCH
+    adapters["switch1"] = SWITCH1
     adapters["leftAction"] = ACTION
     for _service_id in _BOOLEAN_SERVICE_IDS:
         adapters[_service_id] = register_boolean_adapter(_service_id)
     # `status` is method R on the real Profiles; `action` is method RW.
     adapters["action"] = register_enum_adapter("action", writable=True)
     adapters["status"] = register_enum_adapter("status", writable=False)
-    for service_id in _LEFT_TIME_SERVICE_IDS:
-        adapters[service_id] = register_left_time_adapter(service_id)
+    for _service_id in _LEFT_TIME_SERVICE_IDS:
+        adapters[_service_id] = register_left_time_adapter(_service_id)
     # A0VG fridge set-point services reuse the temperature adapter.
-    for service_id in ("refrigerator", "freezer", "vtRoom", "flexzone"):
-        adapters[service_id] = TEMPERATURE
+    for _service_id in ("refrigerator", "freezer", "vtRoom", "flexzone"):
+        adapters[_service_id] = TEMPERATURE
     # Haier A401 four-door fridges carry target+current in a `heat` service.
-    for service_id in ("refrigeratorFloat", "freezerFloat"):
-        adapters[service_id] = TEMPERATURE
-    for service_id in _READONLY_NUMBER_SERVICE_IDS:
-        adapters[service_id] = register_readonly_number_adapter(service_id)
+    for _service_id in ("refrigeratorFloat", "freezerFloat"):
+        adapters[_service_id] = TEMPERATURE
+    for _service_id in _READONLY_NUMBER_SERVICE_IDS:
+        adapters[_service_id] = register_readonly_number_adapter(_service_id)
     return adapters
 
 
