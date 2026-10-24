@@ -95,6 +95,10 @@ def _build_adapters() -> dict[str, ServiceAdapter]:
         adapters[adapter.service_id] = adapter
     adapters["switch1"] = SWITCH1
     adapters["leftAction"] = ACTION
+    # 9MY5 (HA curtain) Profile uses leftOpener/rightOpener for the
+    # opener's position characteristic, mirroring leftAction/rightAction.
+    adapters["leftOpener"] = OPENER
+    adapters["rightOpener"] = OPENER
     for _service_id in _BOOLEAN_SERVICE_IDS:
         adapters[_service_id] = register_boolean_adapter(_service_id)
     # `status` is method R on the real Profiles; `action` is method RW.
